@@ -55,6 +55,7 @@ soc-lab-Mouhamed-Penda/
 ├── thehive/
 │   └── config/                      ← Configuration TheHive
 └── rapport/
+    |-- rapport SOC LAB CONTENEURISE Guide complet de deploiement et simulation d'attaques.pdf
     ├── rapport-final.pdf            ← Rapport technique (16 pages)
     └── captures/                    ← Preuves des attaques
         ├── nmap_scan.txt            ← Résultats scan Nmap
