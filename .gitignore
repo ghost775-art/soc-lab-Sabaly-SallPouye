@@ -1,0 +1,10 @@
+.env
+*.key
+wazuh/config/wazuh_indexer_ssl_certs/
+suricata/logs/*.log
+suricata/logs/*.json
+!suricata/logs/.gitkeep
+rapport/captures/
+!rapport/captures/.gitkeep
+.DS_Store
+wazuh-certificates-tool.log

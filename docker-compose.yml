@@ -1,0 +1,156 @@
+services:
+# OpenSearch : stocke toutes les alertes et indices Wazuh
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:${WAZUH_VERSION}
+    container_name: wazuh.indexer
+    hostname: wazuh.indexer
+    restart: unless-stopped
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile:  { soft: 65536, hard: 65536 }
+    volumes:
+      - wazuh-indexer-data:/var/lib/wazuh-indexer
+      - ./wazuh/config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-indexer/config/certs/root-ca.pem:ro
+      - ./wazuh/config/wazuh_indexer_ssl_certs/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/config/certs/wazuh.indexer.key:ro
+      - ./wazuh/config/wazuh_indexer_ssl_certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/config/certs/wazuh.indexer.pem:ro
+      - ./wazuh/config/wazuh_indexer_ssl_certs/admin.pem:/usr/share/wazuh-indexer/config/certs/admin.pem:ro
+      - ./wazuh/config/wazuh_indexer_ssl_certs/admin-key.pem:/usr/share/wazuh-indexer/config/certs/admin-key.pem:ro
+      - ./wazuh/config/wazuh_indexer/wazuh.indexer.yml:/usr/share/wazuh-indexer/config/opensearch.yml:ro
+      - ./wazuh/config/wazuh_indexer/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml:ro
+    ports:
+      - "9200:9200"
+    networks:
+      - soc-backend
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://wazuh.indexer:9200 -u ${INDEXER_USERNAME}:${INDEXER_PASSWORD} | grep -q 'cluster_name'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+# SIEM principal
+  wazuh.manager:
+    image: wazuh/wazuh-manager:${WAZUH_VERSION}
+    hostname: wazuh.manager
+    depends_on:
+      wazuh.indexer: { condition: service_healthy }
+    environment:
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+      - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
+      - SSL_KEY=/etc/ssl/filebeat.key
+    volumes:
+      - ./wazuh/config/wazuh_indexer_ssl_certs/root-ca-manager.pem:/etc/ssl/root-ca.pem:ro
+      - ./wazuh/config/wazuh_indexer_ssl_certs/wazuh.manager.pem:/etc/ssl/filebeat.pem:ro
+      - ./wazuh/config/wazuh_indexer_ssl_certs/wazuh.manager-key.pem:/etc/ssl/filebeat.key:ro
+      - ./wazuh/config/wazuh_cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf:ro
+    ports: ["1514:1514", "1515:1515", "514:514/udp", "55000:55000"]
+    networks: [soc-backend, soc-frontend]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://localhost:55000/ | grep -q 'Unauthorized'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+# Interface web Wazuh
+# CORRECTION : volumes de config montés (fix ENOENT opensearch_dashboards.yml)
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:${WAZUH_VERSION}
+    hostname: wazuh.dashboard
+    depends_on:
+      wazuh.indexer: { condition: service_healthy }
+      wazuh.manager: { condition: service_healthy }
+    environment:
+      - WAZUH_API_URL=https://wazuh.manager
+      - DASHBOARD_USERNAME=${DASHBOARD_USERNAME}
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+    volumes:
+      - ./wazuh/config/wazuh_dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+      - ./wazuh/config/wazuh_dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
+      - ./wazuh/config/wazuh_indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem:ro
+      - ./wazuh/config/wazuh_indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem:ro
+      - ./wazuh/config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem:ro
+    ports: ["443:5601"]
+    networks:
+      # Sur les DEUX réseaux (fix EAI_AGAIN wazuh.indexer)
+      - soc-frontend
+      - soc-backend
+
+# IDS/IPS réseau
+  suricata:
+    image: jasonish/suricata:latest
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_RAW, SYS_NICE]
+    volumes:
+      - ./suricata/rules:/etc/suricata/rules/custom
+      - ./suricata/logs:/var/log/suricata
+    command: -i ens33
+
+# Visualisation des métriques
+  grafana:
+    image: grafana/grafana:10.2.0
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports: ["3000:3000"]
+    networks: [soc-frontend, soc-backend]
+
+# Base de données pour TheHive
+# CORRECTION : sans MAX_HEAP_SIZE/HEAP_NEWSIZE (Cassandra 4.1 utilise G1GC)
+# CORRECTION : avec volume cassandra-data pour la persistance
+# CORRECTION : healthcheck complet avec interval/timeout/retries
+  cassandra:
+    image: cassandra:4.1
+    environment:
+      - CASSANDRA_CLUSTER_NAME=${CASSANDRA_CLUSTER_NAME}
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    networks: [soc-backend]
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -q UN"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+# Gestion des incidents de sécurité
+  thehive:
+    image: strangebee/thehive:5.4
+    depends_on:
+      cassandra: { condition: service_healthy }
+    command: --secret "${THEHIVE_SECRET}" --cql-hostnames cassandra --no-config-cortex
+    ports: ["9000:9000"]
+    networks: [soc-frontend, soc-backend]
+
+# Application vulnérable pour les attaques
+  dvwa:
+    image: vulnerables/web-dvwa:latest
+    ports: ["8080:80"]
+    networks: [soc-frontend]
+
+networks:
+  soc-frontend:
+    driver: bridge
+    name: soc-frontend
+  soc-backend:
+    driver: bridge
+    name: soc-backend
+
+volumes:
+  wazuh-indexer-data:
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  filebeat_etc:
+  filebeat_var:
+  wazuh-dashboard-config:
+  grafana-data:
+  cassandra-data:
+  thehive-data:
+  thehive-index:
+  suricata-data:
