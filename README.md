@@ -1,6 +1,6 @@
 # 🛡️ SOC Lab Conteneurisé — L2 SIMAC 2025-2026
 
-**Auteur :** Mouhamed-Penda  
+**Auteur :** Mouhamed Moustapha Sabaly - Penda Sall Pouye  
 **Module :** Cloud et Infrastructures Virtuelles  
 **Enseignant :** Dr GUEYE  
 **Formation :** L2 SIMAC P11  
